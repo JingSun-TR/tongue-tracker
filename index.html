@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Real-time Tongue Contour Tracker — 实时舌位轮廓追踪</title>
+  <meta name="description" content="Real-time ultrasound tongue contour detection. Classic CV + DLC AI dual-mode.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- Header -->
+<header class="header">
+  <div class="header-inner">
+    <h1>👅 Tongue Contour Tracker</h1>
+    <div class="header-controls">
+      <span id="fps-display" class="fps-badge">0 FPS</span>
+
+      <!-- Mode Toggle -->
+      <div class="mode-toggle">
+        <button id="btn-mode-cv" class="btn btn-mode active" onclick="setMode('cv')">🔧 传统CV</button>
+        <button id="btn-mode-dlc" class="btn btn-mode" onclick="setMode('dlc')">🤖 DLC AI</button>
+      </div>
+
+      <button id="btn-start" class="btn btn-primary" onclick="startCapture()">▶ 开始采集</button>
+      <button id="btn-stop" class="btn" onclick="stopCapture()" disabled>⏹ 停止</button>
+      <button class="btn" onclick="takeScreenshot()">📸 截图</button>
+      <select id="camera-select" class="select-input" onchange="switchCamera()">
+        <option value="">选择摄像头...</option>
+      </select>
+    </div>
+  </div>
+</header>
+
+<!-- Main Layout -->
+<div class="main-layout">
+
+  <!-- Video + Overlay -->
+  <div class="video-panel">
+    <div class="video-container">
+      <video id="source-video" autoplay playsinline muted style="display:none;"></video>
+      <canvas id="output-canvas"></canvas>
+      <div id="no-signal" class="no-signal">
+        <div class="no-signal-icon">📡</div>
+        <p>点击「开始采集」连接超声波设备</p>
+        <p style="font-size:0.8rem;color:var(--text-muted);">超声波 → 采集卡 → 浏览器摄像头输入</p>
+      </div>
+    </div>
+
+    <!-- OBS Compatibility Hint -->
+    <div id="obs-hint" class="obs-hint obs-hint-info">
+      💡 <b>提示</b>：未检测到OBS虚拟摄像头。请在OBS中点击「启动虚拟摄像头」以避免设备争用。
+    </div>
+
+    <!-- DLC Status Bar -->
+    <div id="dlc-status" class="dlc-status" style="display:none;">
+      <span id="dlc-status-dot" class="status-dot offline"></span>
+      <span id="dlc-status-text">DLC Server: 未连接</span>
+      <span id="dlc-inference-time" style="margin-left:auto;"></span>
+    </div>
+
+    <!-- Legend -->
+    <div class="legend">
+      <span class="legend-item"><span class="legend-color" style="background:#00ff88;"></span> 舌面轮廓</span>
+      <span class="legend-item"><span class="legend-color" style="background:#ff6b6b;"></span> 轮廓点</span>
+      <span id="legend-roi" class="legend-item"><span class="legend-color" style="background:rgba(255,255,255,0.3);"></span> ROI区域</span>
+      <span id="legend-palate" class="legend-item" style="display:none;"><span class="legend-color" style="background:#ffd700;"></span> 口盖参考点</span>
+      <span id="legend-dlc" class="legend-item" style="display:none;"><span class="legend-color" style="background:#7b68ee;"></span> DLC关键点</span>
+    </div>
+  </div>
+
+  <!-- Controls Panel -->
+  <div class="controls-panel">
+
+    <!-- DLC Mode Settings -->
+    <div id="dlc-settings" class="dlc-settings" style="display:none;">
+      <h3>🤖 DLC AI 模式</h3>
+      <div class="control-group">
+        <label>DLC 服务器地址</label>
+        <input type="text" id="dlc-server-url" class="text-input"
+               value="http://localhost:8766"
+               placeholder="http://localhost:8766">
+      </div>
+      <div class="control-group">
+        <label>
+          <input type="checkbox" id="show-palate-refs" checked onchange="updateCheckbox('showPalateRefs', this.checked)">
+          显示口盖参考点 (金星/木星/水星...)
+        </label>
+      </div>
+      <div class="control-group">
+        <label>
+          <input type="checkbox" id="show-dlc-points" checked onchange="updateCheckbox('showDLCPoints', this.checked)">
+          显示所有DLC关键点
+        </label>
+      </div>
+      <div class="control-group">
+        <label>推理间隔 (帧)</label>
+        <div class="range-row">
+          <input type="range" id="dlc-interval" min="1" max="10" value="2" oninput="updateParam('dlcInterval', this.value)">
+          <span class="range-val" id="dlc-interval-val">2</span>
+        </div>
+      </div>
+      <button id="btn-reconnect-dlc" class="btn btn-block" onclick="checkDLCServer()" style="margin-top:8px;">🔄 重连 DLC 服务器</button>
+    </div>
+
+    <hr class="section-divider" id="section-divider" style="display:none;">
+
+    <!-- CV Mode Settings -->
+    <div id="cv-settings">
+      <h3>🎛 传统CV参数</h3>
+
+      <div class="control-group">
+        <label>ROI 区域 (Y起点 %)</label>
+        <div class="range-row">
+          <input type="range" id="roi-y" min="0" max="80" value="30" oninput="updateParam('roiY', this.value)">
+          <span class="range-val" id="roi-y-val">30%</span>
+        </div>
+      </div>
+
+      <div class="control-group">
+        <label>ROI 区域 (Y终点 %)</label>
+        <div class="range-row">
+          <input type="range" id="roi-h" min="20" max="100" value="80" oninput="updateParam('roiH', this.value)">
+          <span class="range-val" id="roi-h-val">80%</span>
+        </div>
+      </div>
+
+      <div class="control-group">
+        <label>高斯模糊</label>
+        <div class="range-row">
+          <input type="range" id="blur" min="1" max="15" value="5" step="2" oninput="updateParam('blur', this.value)">
+          <span class="range-val" id="blur-val">5</span>
+        </div>
+      </div>
+
+      <div class="control-group">
+        <label>二值化阈值</label>
+        <div class="range-row">
+          <input type="range" id="threshold" min="30" max="200" value="100" oninput="updateParam('threshold', this.value)">
+          <span class="range-val" id="threshold-val">100</span>
+        </div>
+      </div>
+
+      <div class="control-group">
+        <label>边缘检测灵敏度</label>
+        <div class="range-row">
+          <input type="range" id="edge-low" min="10" max="150" value="50" oninput="updateParam('edgeLow', this.value)">
+          <span class="range-val" id="edge-low-val">50</span>
+        </div>
+        <div class="range-row">
+          <input type="range" id="edge-high" min="50" max="250" value="150" oninput="updateParam('edgeHigh', this.value)">
+          <span class="range-val" id="edge-high-val">150</span>
+        </div>
+      </div>
+
+      <div class="control-group">
+        <label>轮廓线粗细</label>
+        <div class="range-row">
+          <input type="range" id="line-width" min="1" max="6" value="3" oninput="updateParam('lineWidth', this.value)">
+          <span class="range-val" id="line-width-val">3</span>
+        </div>
+      </div>
+
+      <div class="control-group">
+        <label>
+          <input type="checkbox" id="show-points" checked onchange="updateCheckbox('showPoints', this.checked)">
+          显示轮廓点
+        </label>
+      </div>
+
+      <div class="control-group">
+        <label>
+          <input type="checkbox" id="show-roi" checked onchange="updateCheckbox('showROI', this.checked)">
+          显示ROI区域
+        </label>
+      </div>
+
+      <div class="control-group">
+        <label>
+          <input type="checkbox" id="invert" onchange="updateCheckbox('invert', this.checked)">
+          反转图像（暗底超声图）
+        </label>
+      </div>
+
+      <button class="btn btn-block" onclick="resetParams()" style="margin-top:8px;">🔄 恢复默认</button>
+    </div>
+
+    <div class="info-box" style="margin-top:16px;">
+      <h4>💡 使用说明 — OBS + Tracker 联用</h4>
+      <ol style="font-size:0.78rem;color:var(--text-secondary);padding-left:16px;line-height:1.7;">
+        <li>超声波机器通过采集卡连接电脑</li>
+        <li><b>在OBS中添加采集卡为视频源，然后点击「启动虚拟摄像头」</b> ⭐</li>
+        <li>在本页面摄像头列表中选择 <b>🎬 OBS虚拟摄像头</b>（推荐）</li>
+        <li><b>传统CV模式</b>：调整ROI和阈值提取轮廓</li>
+        <li><b>DLC AI模式</b>：先启动Windows端服务器 <code>python windows_dlc_server.py</code></li>
+        <li>⚠️ 不要同时用OBS和Tracker直接抓采集卡 — 会互相抢占！</li>
+      </ol>
+    </div>
+  </div>
+</div>
+
+<!-- Screenshot Gallery -->
+<div class="gallery" id="gallery" style="display:none;">
+  <h3>📸 截图 <button class="btn btn-sm" onclick="clearGallery()">清空</button></h3>
+  <div class="gallery-grid" id="gallery-grid"></div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
