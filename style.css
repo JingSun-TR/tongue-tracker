@@ -83,6 +83,25 @@ body {
 .status-dot.connecting { background: #ffa500; animation: pulse 1s infinite; }
 @keyframes pulse { 0%,100% { opacity: 0.4; } 50% { opacity: 1; } }
 
+/* OBS Compatibility Hint Banner */
+.obs-hint {
+  padding: 8px 14px; margin: 8px 0 0 0;
+  border-radius: var(--radius); font-size: 0.75rem;
+  line-height: 1.5; border: 1px solid;
+}
+.obs-hint-ok {
+  background: rgba(0,255,136,0.08); border-color: rgba(0,255,136,0.25);
+  color: #00ff88;
+}
+.obs-hint-warn {
+  background: rgba(255,165,0,0.08); border-color: rgba(255,165,0,0.25);
+  color: #ffa500;
+}
+.obs-hint-info {
+  background: rgba(123,104,238,0.08); border-color: rgba(123,104,238,0.25);
+  color: #7b68ee;
+}
+
 .section-divider {
   border: none; border-top: 1px solid var(--border);
   margin: 16px 0;

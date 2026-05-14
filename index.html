@@ -49,6 +49,11 @@
       </div>
     </div>
 
+    <!-- OBS Compatibility Hint -->
+    <div id="obs-hint" class="obs-hint obs-hint-info">
+      💡 <b>提示</b>：未检测到OBS虚拟摄像头。请在OBS中点击「启动虚拟摄像头」以避免设备争用。
+    </div>
+
     <!-- DLC Status Bar -->
     <div id="dlc-status" class="dlc-status" style="display:none;">
       <span id="dlc-status-dot" class="status-dot offline"></span>
@@ -183,13 +188,14 @@
     </div>
 
     <div class="info-box" style="margin-top:16px;">
-      <h4>💡 使用说明</h4>
+      <h4>💡 使用说明 — OBS + Tracker 联用</h4>
       <ol style="font-size:0.78rem;color:var(--text-secondary);padding-left:16px;line-height:1.7;">
         <li>超声波机器通过采集卡连接电脑</li>
-        <li>浏览器识别为摄像头输入</li>
+        <li><b>在OBS中添加采集卡为视频源，然后点击「启动虚拟摄像头」</b> ⭐</li>
+        <li>在本页面摄像头列表中选择 <b>🎬 OBS虚拟摄像头</b>（推荐）</li>
         <li><b>传统CV模式</b>：调整ROI和阈值提取轮廓</li>
         <li><b>DLC AI模式</b>：先启动Windows端服务器 <code>python windows_dlc_server.py</code></li>
-        <li>AI模式自动识别舌位关键点和口盖参考点</li>
+        <li>⚠️ 不要同时用OBS和Tracker直接抓采集卡 — 会互相抢占！</li>
       </ol>
     </div>
   </div>

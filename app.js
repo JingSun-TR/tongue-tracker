@@ -7,6 +7,9 @@ let animationId = null;
 let frameCount = 0;
 let lastFpsTime = performance.now();
 let currentFps = 0;
+let obsVirtualCamDeviceId = null;  // OBS Virtual Camera device ID
+let currentDeviceId = null;        // Currently active device ID
+let streamHealthErrors = 0;        // Consecutive stream health failures
 
 // Mode: 'cv' or 'dlc'
 let currentMode = 'cv';
@@ -208,19 +211,83 @@ function drawDLCKeypoints(kps, canvasW, canvasH) {
 // ─── Camera Setup ────────────────────────────
 async function enumerateCameras() {
   try {
+    // Request permission first (needed for device labels)
+    try {
+      const tempStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      tempStream.getTracks().forEach(t => t.stop());
+    } catch (_) { /* permission may already be granted */ }
+
     const devices = await navigator.mediaDevices.enumerateDevices();
     const cameras = devices.filter(d => d.kind === 'videoinput');
+
+    // Detect OBS Virtual Camera
+    obsVirtualCamDeviceId = null;
+    for (const cam of cameras) {
+      const label = (cam.label || '').toLowerCase();
+      if (label.includes('obs') || label.includes('virtual')) {
+        obsVirtualCamDeviceId = cam.deviceId;
+        break;
+      }
+    }
+
     const select = document.getElementById('camera-select');
+    const prevValue = select.value; // preserve current selection if still valid
+
     select.innerHTML = '<option value="">选择摄像头...</option>';
+
+    // Show OBS Virtual Camera first with special label
+    if (obsVirtualCamDeviceId) {
+      const obsCam = cameras.find(c => c.deviceId === obsVirtualCamDeviceId);
+      if (obsCam) {
+        select.innerHTML += `<option value="${obsCam.deviceId}" class="obs-cam-option">
+          🎬 ${obsCam.label || 'OBS Virtual Camera'} ← 推荐</option>`;
+      }
+    }
+
     cameras.forEach((cam, i) => {
+      if (cam.deviceId === obsVirtualCamDeviceId) return; // already added
       select.innerHTML += `<option value="${cam.deviceId}">${cam.label || 'Camera ' + (i+1)}</option>`;
     });
-    if (cameras.length > 0 && !select.value) {
+
+    // Restore previous selection if still valid, otherwise prefer OBS Virtual Cam
+    const validIds = cameras.map(c => c.deviceId);
+    if (prevValue && validIds.includes(prevValue)) {
+      select.value = prevValue;
+    } else if (obsVirtualCamDeviceId) {
+      select.value = obsVirtualCamDeviceId;
+    } else if (cameras.length > 0 && !select.value) {
       select.value = cameras[0].deviceId;
     }
+
+    // Update OBS hint banner
+    updateOBSHint(select.value);
   } catch (e) {
     console.warn('Camera enumeration failed:', e);
   }
+}
+
+// ─── OBS Compatibility Helpers ───────────────
+function updateOBSHint(deviceId) {
+  const hint = document.getElementById('obs-hint');
+  if (!hint) return;
+
+  if (deviceId === obsVirtualCamDeviceId) {
+    // User selected OBS Virtual Camera — ideal setup
+    hint.className = 'obs-hint obs-hint-ok';
+    hint.innerHTML = '✅ <b>最佳配置</b>：通过OBS虚拟摄像头采集，OBS和Tracker互不干扰。';
+  } else if (obsVirtualCamDeviceId && deviceId && deviceId !== obsVirtualCamDeviceId) {
+    // OBS VC available but user chose different device — warn about contention
+    hint.className = 'obs-hint obs-hint-warn';
+    hint.innerHTML = '⚠️ <b>注意</b>：你选择了采集卡直连。如果OBS也使用同一设备，画面会互相抢占。<br>建议切换到 🎬 OBS虚拟摄像头。';
+  } else if (!obsVirtualCamDeviceId) {
+    // No OBS VC detected
+    hint.className = 'obs-hint obs-hint-info';
+    hint.innerHTML = '💡 <b>提示</b>：未检测到OBS虚拟摄像头。请在OBS中点击「启动虚拟摄像头」以避免设备争用。';
+  }
+}
+
+function isUsingOBSVirtualCam() {
+  return currentDeviceId === obsVirtualCamDeviceId && obsVirtualCamDeviceId !== null;
 }
 
 async function startCapture() {
@@ -231,7 +298,15 @@ async function startCapture() {
   };
 
   try {
+    // First, stop any existing stream before acquiring new one
+    if (stream) {
+      stream.getTracks().forEach(t => t.stop());
+      stream = null;
+    }
+
     stream = await navigator.mediaDevices.getUserMedia(constraints);
+    currentDeviceId = deviceId;
+    streamHealthErrors = 0;
     sourceVideo.srcObject = stream;
     sourceVideo.style.display = 'block';
     noSignal.style.display = 'none';
@@ -252,9 +327,19 @@ async function startCapture() {
     if (currentMode === 'dlc') checkDLCServer();
 
     processFrame();
-    enumerateCameras();
+    updateOBSHint(deviceId);
   } catch (e) {
-    alert('摄像头访问失败: ' + e.message);
+    const msg = e.message || String(e);
+    if (msg.includes('NotReadableError') || msg.includes('device')) {
+      alert('⚠️ 摄像头访问失败: 设备可能被其他程序(如OBS)占用。\n\n' +
+            '解决方法:\n' +
+            '1. 在OBS中点击「启动虚拟摄像头」\n' +
+            '2. 在本页面摄像头列表中选择 🎬 OBS虚拟摄像头\n\n' +
+            '错误详情: ' + msg);
+    } else {
+      alert('摄像头访问失败: ' + msg);
+    }
+    updateOBSHint(deviceId);
   }
 }
 
@@ -277,8 +362,43 @@ function stopCapture() {
 }
 
 async function switchCamera() {
-  if (stream) {
-    stopCapture();
+  const newDeviceId = document.getElementById('camera-select').value;
+  if (!newDeviceId || newDeviceId === currentDeviceId) return;
+
+  // If no active stream, just update hint — user will click "开始采集" manually
+  if (!stream) {
+    updateOBSHint(newDeviceId);
+    return;
+  }
+
+  // Use track replacement instead of full stop/start to avoid
+  // releasing the device back to the system (which OBS may grab)
+  try {
+    const newStream = await navigator.mediaDevices.getUserMedia({
+      video: { deviceId: { exact: newDeviceId } },
+      audio: false
+    });
+
+    const newTrack = newStream.getVideoTracks()[0];
+    if (!newTrack) throw new Error('No video track in new stream');
+
+    // Stop old tracks
+    stream.getTracks().forEach(t => t.stop());
+
+    // Build new stream with the fresh track
+    stream = new MediaStream([newTrack]);
+    currentDeviceId = newDeviceId;
+    streamHealthErrors = 0;
+    sourceVideo.srcObject = stream;
+    await sourceVideo.play();
+
+    outputCanvas.width = sourceVideo.videoWidth || 640;
+    outputCanvas.height = sourceVideo.videoHeight || 480;
+
+    updateOBSHint(newDeviceId);
+  } catch (e) {
+    console.error('Camera switch failed:', e);
+    // Fall back to full restart
     await startCapture();
   }
 }
@@ -286,6 +406,37 @@ async function switchCamera() {
 // ─── Main Processing Loop ───────────────────
 async function processFrame() {
   if (!stream) return;
+
+  // Stream health check: verify video track is still live
+  const videoTrack = stream.getVideoTracks()[0];
+  if (!videoTrack || videoTrack.readyState === 'ended') {
+    streamHealthErrors++;
+    if (streamHealthErrors <= 3) {
+      console.warn('Stream health degraded, attempt recovery', streamHealthErrors);
+      // Try to re-acquire the same device
+      try {
+        const newStream = await navigator.mediaDevices.getUserMedia({
+          video: currentDeviceId ? { deviceId: { exact: currentDeviceId } } : true,
+          audio: false
+        });
+        stream.getTracks().forEach(t => t.stop());
+        stream = newStream;
+        sourceVideo.srcObject = stream;
+        await sourceVideo.play();
+        streamHealthErrors = 0;
+        console.log('Stream recovered');
+      } catch (e) {
+        console.error('Stream recovery failed:', e);
+        if (streamHealthErrors >= 3) {
+          stopCapture();
+          alert('⚠️ 摄像头信号丢失。请检查OBS虚拟摄像头是否仍在运行，然后重新点击「开始采集」。');
+        }
+      }
+    }
+    if (streamHealthErrors >= 3) return;
+  } else {
+    streamHealthErrors = 0; // healthy
+  }
 
   const w = outputCanvas.width;
   const h = outputCanvas.height;
@@ -590,4 +741,10 @@ document.addEventListener('DOMContentLoaded', () => {
   outputCanvas.width = 640;
   outputCanvas.height = 480;
   setMode('cv'); // Default to CV mode
+
+  // Re-detect cameras when devices change (e.g. OBS Virtual Camera started/stopped)
+  navigator.mediaDevices.addEventListener('devicechange', () => {
+    console.log('Device change detected, re-enumerating cameras...');
+    enumerateCameras();
+  });
 });
