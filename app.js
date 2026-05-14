@@ -57,6 +57,21 @@ function setMode(mode) {
 
   if (mode === 'dlc') {
     checkDLCServer();
+    // Auto-poll every 5s while model not loaded
+    if (!dlcConnected) {
+      if (window._dlcPollInterval) clearInterval(window._dlcPollInterval);
+      window._dlcPollInterval = setInterval(async () => {
+        if (dlcConnected || currentMode !== 'dlc') {
+          clearInterval(window._dlcPollInterval);
+          return;
+        }
+        await checkDLCServer();
+      }, 5000);
+    }
+  } else {
+    if (window._dlcPollInterval) {
+      clearInterval(window._dlcPollInterval);
+    }
   }
 
   // Clear canvas
@@ -81,16 +96,18 @@ async function checkDLCServer() {
     const data = await resp.json();
     if (data.status === 'ok') {
       dlcConnected = data.model_loaded || false;
-      dot.className = dlcConnected ? 'status-dot connected' : 'status-dot offline';
+      dot.className = dlcConnected ? 'status-dot connected' : 'status-dot connecting';
 
       // Capture server-reported model info
       if (data.input_size) dlcInputSize = data.input_size;
       const nk = data.num_keypoints || 19;
       const iw = dlcInputSize[0], ih = dlcInputSize[1];
 
-      text.textContent = dlcConnected
-        ? `DLC: ${nk}关键点 @ ${iw}×${ih}`
-        : `DLC Server: 已连接 (模型未加载)`;
+      if (dlcConnected) {
+        text.textContent = `DLC: ${nk}关键点 @ ${iw}×${ih}`;
+      } else {
+        text.textContent = 'DLC: 模型加载中... (约2-3分钟)';
+      }
     } else {
       dlcConnected = false;
       dot.className = 'status-dot offline';
