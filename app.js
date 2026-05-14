@@ -16,6 +16,7 @@ let currentMode = 'cv';
 let dlcConnected = false;
 let dlcLastRequest = 0;
 let lastDLCKeypoints = null;
+let dlcInputSize = [320, 240];  // server-reported model input size
 
 // Processing params
 const params = {
@@ -81,9 +82,15 @@ async function checkDLCServer() {
     if (data.status === 'ok') {
       dlcConnected = data.model_loaded || false;
       dot.className = dlcConnected ? 'status-dot connected' : 'status-dot offline';
+
+      // Capture server-reported model info
+      if (data.input_size) dlcInputSize = data.input_size;
+      const nk = data.num_keypoints || 19;
+      const iw = dlcInputSize[0], ih = dlcInputSize[1];
+
       text.textContent = dlcConnected
-        ? 'DLC Server: 已连接 (模型已加载)'
-        : 'DLC Server: 已连接 (模型未加载)';
+        ? `DLC: ${nk}关键点 @ ${iw}×${ih}`
+        : `DLC Server: 已连接 (模型未加载)`;
     } else {
       dlcConnected = false;
       dot.className = 'status-dot offline';
@@ -115,9 +122,11 @@ async function sendFrameToDLC(frameBlob) {
     const data = await resp.json();
     const dt = performance.now() - t0;
 
-    // Update status
+    // Update status with server-reported inference time if available
+    const serverMs = data.inference_time_ms || 0;
+    const totalMs = Math.round(dt);
     document.getElementById('dlc-inference-time').textContent =
-      Math.round(dt) + 'ms';
+      serverMs > 0 ? `推理${serverMs}ms / 总计${totalMs}ms` : `${totalMs}ms`;
 
     return data;
   } catch (e) {
@@ -131,17 +140,27 @@ async function sendFrameToDLC(frameBlob) {
 }
 
 // ─── DLC Keypoint Drawing ───────────────────
-function drawDLCKeypoints(kps, canvasW, canvasH) {
-  if (!kps || !kps.keypoints) return;
+function drawDLCKeypoints(data, canvasW, canvasH) {
+  if (!data || (!data.keypoints && !data.tongue_contour)) return;
 
-  const allKP = kps.keypoints;
-  const scaleX = canvasW / (kps.input_size ? kps.input_size[0] : 320);
-  const scaleY = canvasH / (kps.input_size ? kps.input_size[1] : 240);
+  // Use server-reported input size for scaling
+  const inW = data.input_size ? data.input_size[0] : dlcInputSize[0];
+  const inH = data.input_size ? data.input_size[1] : dlcInputSize[1];
+  const scaleX = canvasW / inW;
+  const scaleY = canvasH / inH;
 
-  // Tongue contour (indices 1-10)
-  const tonguePoints = allKP.slice(1, 11).filter(
-    kp => kp.confidence > 0.1
-  );
+  // Prefer server-computed tongue_contour or tongue_valid
+  let tonguePoints;
+  if (data.tongue_valid && data.tongue_valid.length >= 2) {
+    tonguePoints = data.tongue_valid;
+  } else if (data.tongue_contour && data.tongue_contour.length >= 2) {
+    tonguePoints = data.tongue_contour.filter(kp => kp.confidence > 0.1);
+  } else if (data.keypoints) {
+    // Fallback: extract tongue from keypoints (indices 1-10: tongueRoot1..tongueTip2)
+    tonguePoints = data.keypoints.slice(1, 11).filter(kp => kp.confidence > 0.1);
+  } else {
+    tonguePoints = [];
+  }
 
   if (tonguePoints.length >= 2) {
     // Draw contour line
@@ -157,7 +176,7 @@ function drawDLCKeypoints(kps, canvasW, canvasH) {
     ctx.stroke();
     ctx.shadowBlur = 0;
 
-    // Draw tongue contour points
+    // Draw contour points
     if (params.showPoints) {
       ctx.fillStyle = '#ff6b6b';
       for (const kp of tonguePoints) {
@@ -168,18 +187,18 @@ function drawDLCKeypoints(kps, canvasW, canvasH) {
     }
   }
 
-  // All DLC keypoints (including vallecula and palate refs)
-  if (params.showDLCPoints) {
+  // All DLC keypoints (vallecula + palate refs)
+  const allKP = data.keypoints;
+  if (params.showDLCPoints && allKP) {
     for (const kp of allKP) {
       if (kp.confidence < 0.3) continue;
 
       const x = kp.x * scaleX;
       const y = kp.y * scaleY;
 
-      // Palate reference points (indices 11-18: jinxing...taiyang)
       const isPalate = ['jinxing','muxing','shuixing','huoxing','tuxing','diqiu','yueliang','taiyang'].includes(kp.name);
       const isVallecula = kp.name === 'vallecula';
-      const isTongue = kp.name.startsWith('tongue');
+      const isTongue = kp.name && kp.name.startsWith('tongue');
 
       if (isPalate && params.showPalateRefs) {
         ctx.fillStyle = '#ffd700';
@@ -189,12 +208,9 @@ function drawDLCKeypoints(kps, canvasW, canvasH) {
         ctx.arc(x, y, params.lineWidth + 2, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
-        // Label
         ctx.fillStyle = '#ffd700';
         ctx.font = '9px Inter, sans-serif';
         ctx.fillText(kp.name, x + 8, y - 4);
-      } else if (isTongue) {
-        // Already drawn above
       } else if (isVallecula) {
         ctx.fillStyle = '#7b68ee';
         ctx.beginPath();
@@ -204,6 +220,7 @@ function drawDLCKeypoints(kps, canvasW, canvasH) {
         ctx.font = '9px Inter, sans-serif';
         ctx.fillText('vallecula', x + 8, y - 4);
       }
+      // Tongue points already drawn via contour above
     }
   }
 }
@@ -472,7 +489,7 @@ async function processFrameDLC(w, h) {
     ctx.fillStyle = '#ff6b6b';
     ctx.font = '14px Inter, sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('DLC Server 未连接 — 检查Windows端服务器', w/2, h/2);
+    ctx.fillText('DLC Server 未连接 — 运行 python windows_dlc_server.py', w/2, h/2);
     ctx.textAlign = 'start';
     return;
   }
@@ -480,20 +497,28 @@ async function processFrameDLC(w, h) {
   const now = performance.now();
   const interval = params.dlcInterval;
 
-  // Send frame every N frames
-  if (now - dlcLastRequest > interval * 33) { // ~30fps base, interval * frame time
+  // Send frame every N frames (~30fps → interval*33ms between sends)
+  if (now - dlcLastRequest > interval * 33) {
     dlcLastRequest = now;
 
-    // Capture frame as JPEG blob
-    const blob = await new Promise(resolve => {
-      outputCanvas.toBlob(resolve, 'image/jpeg', 0.8);
-    });
+    // Capture frame from source video (not canvas, to avoid sending overlays)
+    if (sourceVideo.readyState >= 2) {
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = sourceVideo.videoWidth || w;
+      tempCanvas.height = sourceVideo.videoHeight || h;
+      const tempCtx = tempCanvas.getContext('2d');
+      tempCtx.drawImage(sourceVideo, 0, 0, tempCanvas.width, tempCanvas.height);
 
-    if (blob) {
-      const result = await sendFrameToDLC(blob);
-      if (result) {
-        lastDLCKeypoints = result;
-        dlcConnected = true;
+      const blob = await new Promise(resolve => {
+        tempCanvas.toBlob(resolve, 'image/jpeg', 0.85);
+      });
+
+      if (blob) {
+        const result = await sendFrameToDLC(blob);
+        if (result) {
+          lastDLCKeypoints = result;
+          dlcConnected = true;
+        }
       }
     }
   }
